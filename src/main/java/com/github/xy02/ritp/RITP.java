@@ -133,44 +133,45 @@ public class RITP {
                                                        Function<Integer, Observable<Msg>> getPullMsgsByStreamId) {
         return header -> {
             int streamId = newStreamId.get();
+            Subject<byte[]> bufSender = PublishSubject.create();
+            Subject<Boolean> sendable = BehaviorSubject.createDefault(false);
             Observable<Object> remoteClose = getCloseMsgsByStreamId.apply(streamId).take(1)
                     .flatMap(msg -> Observable.error(new Exception(msg.getClose().getMessage())));
-            Observable<Integer> pulls = getPullMsgsByStreamId.apply(streamId).map(Msg::getPull)
-                    .takeUntil(remoteClose).share();
-            Subject<byte[]> bufSender = PublishSubject.create();
-            Subject<Integer> sendNotifier = BehaviorSubject.createDefault(0);
-            Observable<byte[]> bufs = bufSender.takeUntil(remoteClose);
-            Observable<Integer> sendableAmounts = Observable.merge(sendNotifier, pulls)
-                    .scan(0, Integer::sum).replay(1).refCount();
-            Observable<Boolean> isSendable = sendableAmounts.map(amount -> amount > 0).distinctUntilChanged()
-                    .replay(1).refCount();
-            Observable<Msg> sendingMsgs = bufs.withLatestFrom(isSendable, (buf, sendable) -> sendable ?
-                    Observable.just(Msg.newBuilder().setBuf(ByteString.copyFrom(buf))) : Observable.<Msg.Builder>empty())
+            Observable<Msg> sendingMsgs = bufSender.takeUntil(remoteClose)
+                    .withLatestFrom(sendable, (buf, ok) -> ok ?
+                            Observable.just(Msg.newBuilder().setBuf(ByteString.copyFrom(buf))) :
+                            Observable.<Msg.Builder>empty())
                     .flatMap(o -> o)
-                    .doOnNext(x -> sendNotifier.onNext(-1))
                     .startWithItem(Msg.newBuilder().setHeader(header))
                     .concatWith(Observable.just(Msg.newBuilder().setEnd(End.newBuilder().setReason(End.Reason.COMPLETE))))
                     .onErrorReturn(err -> Msg.newBuilder().setEnd(End.newBuilder().setReason(End.Reason.CANCEL).setMessage(err.getMessage())))
                     .map(builder -> builder.setStreamId(streamId).build())
                     .doOnEach(msgSender);
-            return new Stream(pulls, sendableAmounts, isSendable, sendingMsgs, bufSender);
+            Observable<Integer> pulls = getPullMsgsByStreamId.apply(streamId).map(Msg::getPull)
+                    .takeUntil(remoteClose).share();
+            Observable<Integer> sendableAmounts = Observable.merge(sendingMsgs.map(x -> -1), pulls)
+                    .scan(0, Integer::sum).replay(1).refCount();
+            Observable<Boolean> isSendable = sendableAmounts.map(amount -> amount > 0).distinctUntilChanged()
+                    .doOnEach(sendable)
+                    .replay(1).refCount();
+            return new Stream(pulls, sendableAmounts, isSendable, bufSender);
         };
     }
 
     public static Function<Observable<Socket>, Observable<Connection>> initWith(Info myInfo) {
         return sockets -> sockets.flatMap(socket -> {
             GroupedInput gi = getGroupedInput(socket.getBuffers());
-            OutputContext output = getOutputContext(gi.getMsgs(),gi.getPullsToGetMsg());
+            OutputContext output = getOutputContext(gi.getMsgs(), gi.getPullsToGetMsg());
             InputContext input = getInputContext(gi.getMsgs());
             Observable<Object> errs = gi.getErrInfoMoreThanOnce();
             Observable<byte[]> sendingBytes = Observable.merge(output.getMsgFramesToSend(), output.getPullFramesToSend())
                     .startWithItem(Frame.newBuilder().setInfo(myInfo).build())
                     .takeUntil(errs)
-                    .onErrorReturn(err -> err instanceof ProtocolException?
+                    .onErrorReturn(err -> err instanceof ProtocolException ?
                             Frame.newBuilder().setClose(Close.newBuilder()
                                     .setReason(Close.Reason.PROTOCOL_ERROR)
                                     .setMessage(err.getMessage())
-                            ).build():
+                            ).build() :
                             Frame.newBuilder().setClose(Close.newBuilder()
                                     .setReason(Close.Reason.APPLICATION_ERROR)
                                     .setMessage(err.getMessage())
@@ -179,11 +180,11 @@ public class RITP {
                     .map(AbstractMessageLite::toByteArray);
             return gi.getInfo().doOnSubscribe(disposable -> sendingBytes.subscribe(socket.getSender()))
                     .map(remoteInfo -> {
-                       Function<String, Observable<OnStream>> register = registerWith(output.getMsgSender(),
-                               input.getGetHeaderMsgsByFn(),input.getGetEndMsgsByStreamId(),input.getGetBufMsgsByStreamId());
-                       Function<Header, Stream> stream = streamWith(output.getNewStreamId(), output.getMsgSender(),
-                               input.getGetCloseMsgsByStreamId(), input.getGetPullMsgsByStreamId());
-                       return new Connection(remoteInfo, gi.getMsgs(), output.getMsgPuller(), register, stream);
+                        Function<String, Observable<OnStream>> register = registerWith(output.getMsgSender(),
+                                input.getGetHeaderMsgsByFn(), input.getGetEndMsgsByStreamId(), input.getGetBufMsgsByStreamId());
+                        Function<Header, Stream> stream = streamWith(output.getNewStreamId(), output.getMsgSender(),
+                                input.getGetCloseMsgsByStreamId(), input.getGetPullMsgsByStreamId());
+                        return new Connection(remoteInfo, gi.getMsgs(), output.getMsgPuller(), register, stream);
                     });
         });
     }
