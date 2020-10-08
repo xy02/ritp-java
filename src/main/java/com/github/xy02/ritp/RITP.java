@@ -136,11 +136,6 @@ public class RITP {
             Observable<Object> remoteClose = getCloseMsgsByStreamId.apply(streamId).take(1)
                     .flatMap(msg -> Observable.error(new Exception(msg.getClose().getMessage())));
             Observable<Integer> pulls = getPullMsgsByStreamId.apply(streamId).map(Msg::getPull)
-                    .doOnSubscribe(d-> {
-                        //当订阅时发送header
-                        Msg msg = Msg.newBuilder().setHeader(header).setStreamId(streamId).build();
-                        msgSender.onNext(msg);
-                    })
                     .takeUntil(remoteClose).share();
             Subject<byte[]> bufSender = PublishSubject.create();
             Subject<Integer> sendNotifier = BehaviorSubject.createDefault(0);
@@ -153,7 +148,7 @@ public class RITP {
                     Observable.just(Msg.newBuilder().setBuf(ByteString.copyFrom(buf))) : Observable.<Msg.Builder>empty())
                     .flatMap(o -> o)
                     .doOnNext(x -> sendNotifier.onNext(-1))
-//                    .startWithItem(Msg.newBuilder().setHeader(header))
+                    .startWithItem(Msg.newBuilder().setHeader(header))
                     .concatWith(Observable.just(Msg.newBuilder().setEnd(End.newBuilder().setReason(End.Reason.COMPLETE))))
                     .onErrorReturn(err -> Msg.newBuilder().setEnd(End.newBuilder().setReason(End.Reason.CANCEL).setMessage(err.getMessage())))
                     .map(builder -> builder.setStreamId(streamId).build())
