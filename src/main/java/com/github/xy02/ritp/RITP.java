@@ -133,27 +133,32 @@ public class RITP {
                                                        Function<Integer, Observable<Msg>> getPullMsgsByStreamId) {
         return header -> {
             int streamId = newStreamId.get();
-            Subject<byte[]> bufSender = PublishSubject.create();
-            Subject<Boolean> sendable = BehaviorSubject.createDefault(false);
             Observable<Object> remoteClose = getCloseMsgsByStreamId.apply(streamId).take(1)
                     .flatMap(msg -> Observable.error(new Exception(msg.getClose().getMessage())));
-            Observable<Msg> sendingMsgs = bufSender.takeUntil(remoteClose)
-                    .withLatestFrom(sendable, (buf, ok) -> ok ?
-                            Observable.just(Msg.newBuilder().setBuf(ByteString.copyFrom(buf))) :
-                            Observable.<Msg.Builder>empty())
+            Observable<Integer> pulls = getPullMsgsByStreamId.apply(streamId).map(Msg::getPull)
+                    .doOnSubscribe(d-> {
+                        //当订阅时发送header
+                        Msg msg = Msg.newBuilder().setHeader(header).setStreamId(streamId).build();
+                        msgSender.onNext(msg);
+                    })
+                    .takeUntil(remoteClose).share();
+            Subject<byte[]> bufSender = PublishSubject.create();
+            Subject<Integer> sendNotifier = BehaviorSubject.createDefault(0);
+            Observable<byte[]> bufs = bufSender.takeUntil(remoteClose);
+            Observable<Integer> sendableAmounts = Observable.merge(sendNotifier, pulls)
+                    .scan(0, Integer::sum).replay(1).refCount();
+            Observable<Boolean> isSendable = sendableAmounts.map(amount -> amount > 0).distinctUntilChanged()
+                    .replay(1).refCount();
+            Observable<Msg> sendingMsgs = bufs.withLatestFrom(isSendable, (buf, sendable) -> sendable ?
+                    Observable.just(Msg.newBuilder().setBuf(ByteString.copyFrom(buf))) : Observable.<Msg.Builder>empty())
                     .flatMap(o -> o)
-                    .startWithItem(Msg.newBuilder().setHeader(header))
+                    .doOnNext(x -> sendNotifier.onNext(-1))
+//                    .startWithItem(Msg.newBuilder().setHeader(header))
                     .concatWith(Observable.just(Msg.newBuilder().setEnd(End.newBuilder().setReason(End.Reason.COMPLETE))))
                     .onErrorReturn(err -> Msg.newBuilder().setEnd(End.newBuilder().setReason(End.Reason.CANCEL).setMessage(err.getMessage())))
                     .map(builder -> builder.setStreamId(streamId).build())
                     .doOnEach(msgSender);
-            Observable<Integer> pulls = getPullMsgsByStreamId.apply(streamId).map(Msg::getPull)
-                    .takeUntil(remoteClose).share();
-            Observable<Integer> sendableAmounts = Observable.merge(sendingMsgs.map(x -> -1), pulls)
-                    .scan(0, Integer::sum).replay(1).refCount();
-            Observable<Boolean> isSendable = sendableAmounts.map(amount -> amount > 0).distinctUntilChanged()
-                    .doOnEach(sendable)
-                    .replay(1).refCount();
+            sendingMsgs.subscribe();
             return new Stream(pulls, sendableAmounts, isSendable, bufSender);
         };
     }
