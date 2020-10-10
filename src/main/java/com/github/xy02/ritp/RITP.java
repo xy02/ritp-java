@@ -118,7 +118,10 @@ public class RITP {
             Observable<Msg> pullMsgsToSend = pullIncrements
                     .map(pull -> Msg.newBuilder().setPull(pull))
                     .concatWith(Observable.just(Msg.newBuilder().setClose(Close.newBuilder().setReason(Close.Reason.APPLICATION_ERROR).setMessage(""))))
-                    .onErrorReturn(err -> Msg.newBuilder().setClose(Close.newBuilder().setReason(Close.Reason.APPLICATION_ERROR).setMessage(err.getMessage())))
+                    .onErrorReturn(err -> {
+                        String message = err.getMessage() == null ? "" : err.getMessage();
+                        return Msg.newBuilder().setClose(Close.newBuilder().setReason(Close.Reason.APPLICATION_ERROR).setMessage(message));
+                    })
                     .map(builder -> builder.setStreamId(streamId).build());
             pullMsgsToSend.subscribe(msgSender); //side effect
             return new OnStream(header, bufs, bufPuller);
@@ -147,7 +150,10 @@ public class RITP {
                     .doOnNext(x -> sendNotifier.onNext(-1))
                     .startWithItem(Msg.newBuilder().setHeader(header))
                     .concatWith(Observable.just(Msg.newBuilder().setEnd(End.newBuilder().setReason(End.Reason.COMPLETE))))
-                    .onErrorReturn(err -> Msg.newBuilder().setEnd(End.newBuilder().setReason(End.Reason.CANCEL).setMessage(err.getMessage())))
+                    .onErrorReturn(err -> {
+                        String message = err.getMessage() == null ? "" : err.getMessage();
+                        return Msg.newBuilder().setEnd(End.newBuilder().setReason(End.Reason.CANCEL).setMessage(message));
+                    })
                     .map(builder -> builder.setStreamId(streamId).build());
 //                    .doOnEach(msgSender);
             sendingMsgs.subscribe(msgSender);
@@ -155,8 +161,8 @@ public class RITP {
         };
     }
 
-    public static Function<Socket, Single<Connection>> initWith(Info myInfo) {
-        return socket -> {
+    public static Function<Observable<Socket>, Observable<Connection>> initWith(Info myInfo) {
+        return sockets -> sockets.flatMapSingle(socket -> {
             GroupedInput gi = getGroupedInput(socket.getBuffers());
             OutputContext output = getOutputContext(gi.getMsgs(), gi.getPullsToGetMsg());
             InputContext input = getInputContext(gi.getMsgs());
@@ -182,6 +188,6 @@ public class RITP {
                                 input.getGetCloseMsgsByStreamId(), input.getGetPullMsgsByStreamId());
                         return new Connection(remoteInfo, gi.getMsgs(), output.getMsgPuller(), register, stream);
                     });
-        };
+        });
     }
 }
