@@ -1,25 +1,24 @@
 package com.github.xy02.ritp;
 
 import io.reactivex.rxjava3.core.Observable;
+import io.reactivex.rxjava3.core.Single;
 import ritp.Info;
 import ritp.Msg;
 
 public class GroupedInput {
-    private Observable<Info> info;
+    private Single<Info> info;
     private Observable<Msg> msgs;
     private Observable<Integer> pullsToGetMsg;
     private Observable<Object> remoteClose;
-    private Observable<Object> errInfoMoreThanOnce;
 
-    public GroupedInput(Observable<Info> info, Observable<Msg> msgs, Observable<Integer> pullsToGetMsg, Observable<Object> remoteClose, Observable<Object> errInfoMoreThanOnce) {
+    public GroupedInput(Single<Info> info, Observable<Msg> msgs, Observable<Integer> pullsToGetMsg, Observable<Object> remoteClose) {
         this.info = info;
         this.msgs = msgs;
         this.pullsToGetMsg = pullsToGetMsg;
         this.remoteClose = remoteClose;
-        this.errInfoMoreThanOnce = errInfoMoreThanOnce;
     }
 
-    public Observable<Info> getInfo() {
+    public Single<Info> getInfo() {
         return info;
     }
 
@@ -33,9 +32,5 @@ public class GroupedInput {
 
     public Observable<Object> getRemoteClose() {
         return remoteClose;
-    }
-
-    public Observable<Object> getErrInfoMoreThanOnce() {
-        return errInfoMoreThanOnce;
     }
 }

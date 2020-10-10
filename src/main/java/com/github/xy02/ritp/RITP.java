@@ -4,6 +4,7 @@ import com.github.xy02.util.Rx;
 import com.google.protobuf.AbstractMessageLite;
 import com.google.protobuf.ByteString;
 import io.reactivex.rxjava3.core.Observable;
+import io.reactivex.rxjava3.core.Single;
 import io.reactivex.rxjava3.disposables.Disposable;
 import io.reactivex.rxjava3.functions.Function;
 import io.reactivex.rxjava3.functions.Supplier;
@@ -22,17 +23,13 @@ public class RITP {
         Function<Frame.TypeCase, Observable<Frame>> getFramesByType = Rx.getSubValues(frames, Frame::getTypeCase);
         Observable<Object> remoteClose = getFramesByType.apply(Frame.TypeCase.CLOSE)
                 .take(1).flatMap(frame -> Observable.error(new Error("close"))).cache();
-        Observable<Info> info = getFramesByType.apply(Frame.TypeCase.INFO)
-                .map(Frame::getInfo).cache();
+        Single<Info> info = getFramesByType.apply(Frame.TypeCase.INFO)
+                .map(Frame::getInfo).take(1).singleOrError();
         Observable<Integer> pullsToGetMsg = getFramesByType.apply(Frame.TypeCase.PULL)
                 .map(Frame::getPull);
         Observable<Msg> msgs = getFramesByType.apply(Frame.TypeCase.MSG)
                 .map(Frame::getMsg);
-        Observable<Object> errInfoMoreThanOnce = info.scan(0, (acc, v) -> acc + 1)
-                .filter(n -> n > 1)
-                .take(1)
-                .flatMap(x -> Observable.error(new Error("cannot send Info more than once")));
-        return new GroupedInput(info, msgs, pullsToGetMsg, remoteClose, errInfoMoreThanOnce);
+        return new GroupedInput(info, msgs, pullsToGetMsg, remoteClose);
     }
 
     private static Observable<Integer> getPullIncrements(Observable<Object> msgs, Observable<Integer> pulls, Exception overflowErr) {
@@ -151,22 +148,21 @@ public class RITP {
                     .startWithItem(Msg.newBuilder().setHeader(header))
                     .concatWith(Observable.just(Msg.newBuilder().setEnd(End.newBuilder().setReason(End.Reason.COMPLETE))))
                     .onErrorReturn(err -> Msg.newBuilder().setEnd(End.newBuilder().setReason(End.Reason.CANCEL).setMessage(err.getMessage())))
-                    .map(builder -> builder.setStreamId(streamId).build())
-                    .doOnEach(msgSender);
-            sendingMsgs.subscribe();
+                    .map(builder -> builder.setStreamId(streamId).build());
+//                    .doOnEach(msgSender);
+            sendingMsgs.subscribe(msgSender);
             return new Stream(pulls, sendableAmounts, isSendable, bufSender);
         };
     }
 
-    public static Function<Observable<Socket>, Observable<Connection>> initWith(Info myInfo) {
-        return sockets -> sockets.flatMap(socket -> {
+    public static Function<Socket, Single<Connection>> initWith(Info myInfo) {
+        return socket -> {
             GroupedInput gi = getGroupedInput(socket.getBuffers());
             OutputContext output = getOutputContext(gi.getMsgs(), gi.getPullsToGetMsg());
             InputContext input = getInputContext(gi.getMsgs());
-            Observable<Object> errs = gi.getErrInfoMoreThanOnce();
             Observable<byte[]> sendingBytes = Observable.merge(output.getMsgFramesToSend(), output.getPullFramesToSend())
                     .startWithItem(Frame.newBuilder().setInfo(myInfo).build())
-                    .takeUntil(errs)
+//                    .takeUntil(errs)
                     .onErrorReturn(err -> err instanceof ProtocolException ?
                             Frame.newBuilder().setClose(Close.newBuilder()
                                     .setReason(Close.Reason.PROTOCOL_ERROR)
@@ -186,6 +182,6 @@ public class RITP {
                                 input.getGetCloseMsgsByStreamId(), input.getGetPullMsgsByStreamId());
                         return new Connection(remoteInfo, gi.getMsgs(), output.getMsgPuller(), register, stream);
                     });
-        });
+        };
     }
 }
