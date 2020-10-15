@@ -6,6 +6,7 @@ import com.google.protobuf.ByteString;
 import io.reactivex.rxjava3.core.Observable;
 import io.reactivex.rxjava3.core.Single;
 import io.reactivex.rxjava3.disposables.Disposable;
+import io.reactivex.rxjava3.functions.BiFunction;
 import io.reactivex.rxjava3.functions.Function;
 import io.reactivex.rxjava3.functions.Supplier;
 import io.reactivex.rxjava3.subjects.BehaviorSubject;
@@ -22,7 +23,7 @@ public class RITP {
         Observable<Frame> frames = buffers.map(Frame::parseFrom).share();
         Function<Frame.TypeCase, Observable<Frame>> getFramesByType = Rx.getSubValues(frames, Frame::getTypeCase);
         Observable<Object> remoteClose = getFramesByType.apply(Frame.TypeCase.CLOSE)
-                .take(1).flatMap(frame -> Observable.error(new Error("close"))).cache();
+                .take(1).flatMap(frame -> Observable.error(new Exception("close"))).cache();
         Single<Info> info = getFramesByType.apply(Frame.TypeCase.INFO)
                 .map(Frame::getInfo).take(1).singleOrError();
         Observable<Integer> pullsToGetMsg = getFramesByType.apply(Frame.TypeCase.PULL)
@@ -128,36 +129,35 @@ public class RITP {
         });
     }
 
-    private static Function<Header, Stream> streamWith(Supplier<Integer> newStreamId, Subject<Msg> msgSender,
-                                                       Function<Integer, Observable<Msg>> getCloseMsgsByStreamId,
-                                                       Function<Integer, Observable<Msg>> getPullMsgsByStreamId) {
-        return header -> {
+    private static BiFunction<Header, Observable<byte[]>, Stream> streamWith(Supplier<Integer> newStreamId, Subject<Msg> msgSender,
+                                                                             Function<Integer, Observable<Msg>> getCloseMsgsByStreamId,
+                                                                             Function<Integer, Observable<Msg>> getPullMsgsByStreamId) {
+        return (header, bufs) -> {
             int streamId = newStreamId.get();
-            Observable<Object> remoteClose = getCloseMsgsByStreamId.apply(streamId).take(1)
-                    .flatMap(msg -> Observable.error(new Exception(msg.getClose().getMessage())));
-            Observable<Integer> pulls = getPullMsgsByStreamId.apply(streamId).map(Msg::getPull)
-                    .takeUntil(remoteClose).share();
-            Subject<byte[]> bufSender = PublishSubject.create();
-            Subject<Integer> sendNotifier = BehaviorSubject.createDefault(0);
-            Observable<byte[]> bufs = bufSender.takeUntil(remoteClose);
-            Observable<Integer> sendableAmounts = Observable.merge(sendNotifier, pulls)
-                    .scan(0, Integer::sum).replay(1).refCount();
-            Observable<Boolean> isSendable = sendableAmounts.map(amount -> amount > 0).distinctUntilChanged()
-                    .replay(1).refCount();
-            Observable<Msg> sendingMsgs = bufs.withLatestFrom(isSendable, (buf, sendable) -> sendable ?
+            Subject<Boolean> sendable = BehaviorSubject.createDefault(false);
+            Observable<Msg> msgs = bufs.withLatestFrom(sendable, (buf, ok) -> ok ?
                     Observable.just(Msg.newBuilder().setBuf(ByteString.copyFrom(buf))) : Observable.<Msg.Builder>empty())
                     .flatMap(o -> o)
-                    .doOnNext(x -> sendNotifier.onNext(-1))
-                    .startWithItem(Msg.newBuilder().setHeader(header))
+//                    .startWithItem(Msg.newBuilder().setHeader(header))
                     .concatWith(Observable.just(Msg.newBuilder().setEnd(End.newBuilder().setReason(End.Reason.COMPLETE))))
                     .onErrorReturn(err -> {
                         String message = err.getMessage() == null ? "" : err.getMessage();
                         return Msg.newBuilder().setEnd(End.newBuilder().setReason(End.Reason.CANCEL).setMessage(message));
                     })
                     .map(builder -> builder.setStreamId(streamId).build());
-//                    .doOnEach(msgSender);
-            sendingMsgs.subscribe(msgSender);
-            return new Stream(pulls, sendableAmounts, isSendable, bufSender);
+            Observable<Msg> theEndOfMsgs = msgs.lastOrError().toObservable();
+            Observable<Object> remoteClose = getCloseMsgsByStreamId.apply(streamId).take(1)
+                    .flatMap(msg -> Observable.error(new Exception(msg.getClose().getMessage())));
+            Observable<Integer> pulls = getPullMsgsByStreamId.apply(streamId).map(Msg::getPull)
+                    .takeUntil(theEndOfMsgs)
+                    .takeUntil(remoteClose).share();
+            Observable<Integer> sendableAmounts = Observable.merge(msgs.map(x -> -1), pulls)
+                    .scan(0, Integer::sum);
+            Observable<Boolean> isSendable = sendableAmounts.map(amount -> amount > 0).distinctUntilChanged()
+                    .doOnEach(sendable)
+                    .doOnSubscribe(d -> msgSender.onNext(Msg.newBuilder().setHeader(header).setStreamId(streamId).build()))
+                    .share();
+            return new Stream(pulls, isSendable);
         };
     }
 
@@ -184,7 +184,7 @@ public class RITP {
                     .map(remoteInfo -> {
                         Function<String, Observable<OnStream>> register = registerWith(output.getMsgSender(),
                                 input.getGetHeaderMsgsByFn(), input.getGetEndMsgsByStreamId(), input.getGetBufMsgsByStreamId());
-                        Function<Header, Stream> stream = streamWith(output.getNewStreamId(), output.getMsgSender(),
+                        BiFunction<Header, Observable<byte[]>, Stream> stream = streamWith(output.getNewStreamId(), output.getMsgSender(),
                                 input.getGetCloseMsgsByStreamId(), input.getGetPullMsgsByStreamId());
                         return new Connection(remoteInfo, gi.getMsgs(), output.getMsgPuller(), register, stream);
                     });

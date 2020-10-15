@@ -1,6 +1,7 @@
 package com.github.xy02.ritp;
 
 import io.reactivex.rxjava3.core.Observable;
+import io.reactivex.rxjava3.functions.BiFunction;
 import io.reactivex.rxjava3.functions.Function;
 import io.reactivex.rxjava3.subjects.Subject;
 import ritp.Header;
@@ -12,9 +13,9 @@ public class Connection {
     private Observable<Msg> msgs;
     private Subject<Integer> msgPuller;
     private Function<String, Observable<OnStream>> register;
-    private Function<Header, Stream> stream;
+    private BiFunction<Header, Observable<byte[]>, Stream> stream;
 
-    public Connection(Info remoteInfo, Observable<Msg> msgs, Subject<Integer> msgPuller, Function<String, Observable<OnStream>> register, Function<Header, Stream> stream) {
+    public Connection(Info remoteInfo, Observable<Msg> msgs, Subject<Integer> msgPuller, Function<String, Observable<OnStream>> register, BiFunction<Header, Observable<byte[]>, Stream> stream) {
         this.remoteInfo = remoteInfo;
         this.msgs = msgs;
         this.msgPuller = msgPuller;
@@ -38,7 +39,7 @@ public class Connection {
         return register;
     }
 
-    public Function<Header, Stream> getStream() {
+    public BiFunction<Header, Observable<byte[]>, Stream> getStream() {
         return stream;
     }
 }
