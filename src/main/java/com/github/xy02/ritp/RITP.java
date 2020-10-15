@@ -144,7 +144,9 @@ public class RITP {
                         String message = err.getMessage() == null ? "" : err.getMessage();
                         return Msg.newBuilder().setEnd(End.newBuilder().setReason(End.Reason.CANCEL).setMessage(message));
                     })
-                    .map(builder -> builder.setStreamId(streamId).build());
+                    .map(builder -> builder.setStreamId(streamId).build())
+                    .doOnEach(msgSender)
+                    .share();
             Observable<Msg> theEndOfMsgs = msgs.lastOrError().toObservable();
             Observable<Object> remoteClose = getCloseMsgsByStreamId.apply(streamId).take(1)
                     .flatMap(msg -> Observable.error(new Exception(msg.getClose().getMessage())));
